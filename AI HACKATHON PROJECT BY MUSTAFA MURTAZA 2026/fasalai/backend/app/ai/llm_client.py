@@ -1,11 +1,5 @@
 """
 🧠 FasalAI LLM — Routeway AI
-
-Working Models:
-  gpt-oss-120b:free  ✅ (Primary + Fast)
-  deepseek-r1:free   ✅ (Backup/Reasoning)
-
-Daily Quota: 200 requests/day (FREE)
 """
 import json
 import re
@@ -28,16 +22,14 @@ class LLMClient:
         self.api_key = settings.ROUTEWAY_API_KEY
         self.api_url = f"{settings.ROUTEWAY_API_URL}/chat/completions"
 
-        self.models = [
-            settings.PRIMARY_MODEL,
-            settings.BACKUP_MODEL,
-        ]
-        # Remove duplicates
+        self.models = []
         seen = set()
-        self.models = [m for m in self.models if m not in seen and not seen.add(m)]
+        for m in [settings.PRIMARY_MODEL, settings.BACKUP_MODEL]:
+            if m and m not in seen:
+                self.models.append(m)
+                seen.add(m)
 
         logger.info(f"🧠 LLM (Routeway AI): {self.models}")
-        logger.info(f"📊 Daily Quota: 200 requests/day (FREE)")
 
     def _extract_content(self, data: dict) -> str:
         """Extract content from various response formats"""
@@ -50,47 +42,32 @@ class LLMClient:
                     content = msg.get("content", "")
                     if content:
                         return content
-                # Some APIs use text directly
                 text = choices[0].get("text", "")
                 if text:
                     return text
         except (IndexError, KeyError, TypeError):
             pass
 
-        # Direct content field
-        if "content" in data:
-            return data["content"]
+        # Fallback fields
+        for field in ["content", "response", "output", "result", "data"]:
+            val = data.get(field)
+            if isinstance(val, str) and val.strip():
+                return val
+            if isinstance(val, dict):
+                for sub in ["content", "text"]:
+                    if sub in val and isinstance(val[sub], str):
+                        return val[sub]
 
-        # Response field
-        if "response" in data:
-            return data["response"]
-
-        # Output field
-        if "output" in data:
-            return data["output"]
-
-        # Result field
-        if "result" in data:
-            r = data["result"]
-            if isinstance(r, str):
-                return r
-            if isinstance(r, dict):
-                return r.get("content", r.get("text", ""))
-
-        # Data field
-        if "data" in data:
-            d = data["data"]
-            if isinstance(d, str):
-                return d
-            if isinstance(d, dict):
-                return d.get("content", d.get("text", ""))
-
-        # Last resort — dump everything
         logger.warning(f"Unknown response format. Keys: {list(data.keys())}")
         return ""
 
-    async def _call_model(self, model_id: str, messages: List[Dict],
-                          temperature: float = 0.7, max_tokens: int = 600) -> str:
+    async def _call_model(
+        self,
+        model_id: str,
+        messages: List[Dict],
+        temperature: float = 0.7,
+        max_tokens: int = 1500,
+    ) -> str:
         for attempt in range(settings.LLM_MAX_RETRIES):
             try:
                 async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client:
@@ -108,31 +85,28 @@ class LLMClient:
                         },
                     )
 
-                # Rate limit
                 if resp.status_code == 429:
                     wait = (attempt + 1) * 3
                     logger.warning(f"⏳ [{model_id}] Rate limit, wait {wait}s")
                     await asyncio.sleep(wait)
                     continue
 
-                # Model not available
                 if resp.status_code in [404, 403]:
                     raise RuntimeError(f"Model unavailable ({resp.status_code})")
 
                 if resp.status_code != 200:
                     raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:200]}")
 
-                # Parse response — handle multiple formats
                 data = resp.json()
                 content = self._extract_content(data)
 
                 if not content:
-                    # Log the full response for debugging
-                    logger.warning(f"Empty content from [{model_id}]. Full response: {json.dumps(data)[:300]}")
+                    logger.warning(
+                        f"Empty content [{model_id}]: {json.dumps(data)[:300]}"
+                    )
                     raise ValueError("Empty response")
 
                 content = self._clean(content)
-
                 if not content:
                     raise ValueError("Empty after cleaning")
 
@@ -140,7 +114,7 @@ class LLMClient:
                 return content
 
             except httpx.TimeoutException:
-                logger.warning(f"⏰ [{model_id}] Timeout")
+                logger.warning(f"⏰ [{model_id}] Timeout (attempt {attempt+1})")
                 if attempt < settings.LLM_MAX_RETRIES - 1:
                     await asyncio.sleep(2)
                     continue
@@ -159,21 +133,28 @@ class LLMClient:
         raise RuntimeError(f"[{model_id}] Failed after {settings.LLM_MAX_RETRIES} retries")
 
     def _clean(self, content: str) -> str:
-        """Remove thinking tags"""
+        """Remove thinking tags and clean up"""
         if not content:
             return ""
-        content = re.sub(r'<think>[\s\S]*?</think>', '', content, flags=re.IGNORECASE)
-        content = re.sub(r'<thinking>[\s\S]*?</thinking>', '', content, flags=re.IGNORECASE)
-        content = re.sub(r'<reasoning>[\s\S]*?</reasoning>', '', content, flags=re.IGNORECASE)
-        content = re.sub(r'<reflection>[\s\S]*?</reflection>', '', content, flags=re.IGNORECASE)
-        content = re.sub(r'</?(?:think|thinking|reasoning|reflection)>', '', content, flags=re.IGNORECASE)
-        content = re.sub(r'\n{3,}', '\n\n', content)
+        for tag in ["think", "thinking", "reasoning", "reflection"]:
+            content = re.sub(
+                rf"<{tag}>[\s\S]*?</{tag}>", "", content, flags=re.IGNORECASE
+            )
+            content = re.sub(
+                rf"</?{tag}>", "", content, flags=re.IGNORECASE
+            )
+        content = re.sub(r"\n{3,}", "\n\n", content)
         return content.strip()
 
-    async def generate(self, system_prompt: str, user_prompt: str,
-                       temperature: float = 0.7, max_tokens: int = 600,
-                       tier: ModelTier = ModelTier.PRIMARY) -> str:
-        """Generate with fallback across working models"""
+    async def generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float = 0.7,
+        max_tokens: int = 1500,
+        tier: ModelTier = ModelTier.PRIMARY,
+    ) -> str:
+        """Generate with fallback across models"""
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -182,84 +163,147 @@ class LLMClient:
         last_error = None
         for model_id in self.models:
             try:
-                logger.info(f"🔄 {model_id}")
-                result = await self._call_model(model_id, messages, temperature, max_tokens)
+                logger.info(f"🔄 Trying {model_id}")
+                result = await self._call_model(
+                    model_id, messages, temperature, max_tokens
+                )
                 if result and result.strip():
-                    logger.info(f"✅ {model_id}")
+                    logger.info(f"✅ {model_id} succeeded")
                     return result
             except Exception as e:
                 last_error = e
-                logger.warning(f"⚠️ {model_id}: {e}")
+                logger.warning(f"⚠️ {model_id} failed: {e}")
                 await asyncio.sleep(1)
 
         raise RuntimeError(f"All models failed: {last_error}")
 
-    async def generate_json(self, system_prompt: str, user_prompt: str,
-                            temperature: float = 0.5,
-                            tier: ModelTier = ModelTier.PRIMARY) -> Dict[str, Any]:
-        json_inst = "\n\nRESPOND WITH ONLY VALID JSON. No markdown. Start with { end with }."
-        resp = await self.generate(system_prompt, user_prompt + json_inst, temperature, 1500, tier)
-        return self._parse_json(resp)
+    async def generate_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float = 0.5,
+        tier: ModelTier = ModelTier.PRIMARY,
+    ) -> Dict[str, Any]:
+        """Generate and parse JSON response"""
+        json_instruction = (
+            "\n\n⚠️ CRITICAL: Respond with ONLY valid JSON. "
+            "No markdown code blocks. No explanation before or after. "
+            "Start with { and end with }. "
+            "Ensure all strings are properly escaped."
+        )
+
+        # Use 1500 tokens — NOT the default 600
+        resp = await self.generate(
+            system_prompt,
+            user_prompt + json_instruction,
+            temperature,
+            max_tokens=1500,
+            tier=tier,
+        )
+
+        parsed = self._parse_json(resp)
+
+        # Log what we parsed for debugging
+        logger.debug(f"📋 Parsed JSON keys: {list(parsed.keys())}")
+
+        return parsed
 
     def _parse_json(self, response: str) -> Dict[str, Any]:
-        if not response:
-            return {"answer": "", "answer_urdu": ""}
-        c = response.strip()
+        """Robust JSON parser with multiple fallback strategies"""
+        if not response or not response.strip():
+            logger.warning("Empty response to parse")
+            return self._empty_response()
 
-        # Direct
+        text = response.strip()
+
+        # Strategy 1: Direct parse
         try:
-            return json.loads(c)
+            result = json.loads(text)
+            if isinstance(result, dict):
+                return result
         except json.JSONDecodeError:
             pass
 
-        # From ```json
-        m = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', c)
-        if m:
+        # Strategy 2: Extract from ```json ... ```
+        code_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
+        if code_match:
             try:
-                return json.loads(m.group(1))
+                result = json.loads(code_match.group(1))
+                if isinstance(result, dict):
+                    return result
             except json.JSONDecodeError:
                 pass
 
-        # Find { ... }
-        s = c.find("{")
-        if s != -1:
-            d = 0
-            for i in range(s, len(c)):
-                if c[i] == '{':
-                    d += 1
-                elif c[i] == '}':
-                    d -= 1
-                    if d == 0:
-                        j = c[s:i + 1]
-                        j = re.sub(r',\s*}', '}', j)
-                        j = re.sub(r',\s*]', ']', j)
+        # Strategy 3: Find outermost { ... } with brace matching
+        first_brace = text.find("{")
+        if first_brace != -1:
+            depth = 0
+            in_string = False
+            escape_next = False
+
+            for i in range(first_brace, len(text)):
+                char = text[i]
+
+                if escape_next:
+                    escape_next = False
+                    continue
+
+                if char == "\\":
+                    escape_next = True
+                    continue
+
+                if char == '"':
+                    in_string = not in_string
+                    continue
+
+                if in_string:
+                    continue
+
+                if char == "{":
+                    depth += 1
+                elif char == "}":
+                    depth -= 1
+                    if depth == 0:
+                        json_str = text[first_brace : i + 1]
+                        # Fix common JSON issues
+                        json_str = re.sub(r",\s*}", "}", json_str)
+                        json_str = re.sub(r",\s*]", "]", json_str)
                         try:
-                            return json.loads(j)
+                            result = json.loads(json_str)
+                            if isinstance(result, dict):
+                                return result
                         except json.JSONDecodeError:
                             pass
                         break
 
-        return {"answer": c, "answer_urdu": c, "confidence": 0.5}
+        # Strategy 4: Use the raw text as the answer
+        logger.warning(f"JSON parse failed — using raw text as answer")
+        logger.debug(f"Raw text (first 300): {text[:300]}")
 
-    async def classify_fast(self, text: str, categories: List[str]) -> List[str]:
-        """Instant keyword classification — no API call needed!"""
-        return self._keyword_classify(text, categories)
-
-    def _keyword_classify(self, text: str, categories: List[str]) -> List[str]:
-        t = text.lower()
-        kw = {
-            "diagnosis": ["disease","bimari","rust","zang","pest","keera","spots","wilt","patti","maror","kira"],
-            "weather": ["weather","mosam","rain","barish","garmi","sardi","frost","pala","dhoop"],
-            "market": ["price","qeemat","mandi","sell","bechna","rate","daam","munafa"],
-            "calendar": ["time","waqt","season","sowing","bijai","harvest","kab","katai"],
-            "fertilizer": ["fertilizer","khad","urea","dap","potash","mitti","compost"],
-            "irrigation": ["water","pani","irrigation","canal","sinchai","tube"],
+        return {
+            "answer": text,
+            "answer_urdu": "",  # DON'T duplicate English as Urdu
+            "confidence": 0.5,
+            "sources": ["FasalAI Knowledge Base"],
+            "follow_up_questions": [],
+            "reasoning": "JSON parse failed, raw text returned",
         }
-        result = [c for c in categories if c in kw and any(k in t for k in kw[c])]
-        return result or ["general"]
+
+    def _empty_response(self) -> Dict[str, Any]:
+        """Return empty response structure"""
+        return {
+            "answer": "I could not generate a response. Please try again.",
+            "answer_urdu": "جواب نہیں مل سکا۔ دوبارہ کوشش کریں۔",
+            "confidence": 0.3,
+            "sources": [],
+            "follow_up_questions": [],
+            "reasoning": "Empty LLM response",
+        }
 
     async def generate_quick(self, prompt: str, max_tokens: int = 300) -> str:
-        return await self.generate("Be concise.", prompt, 0.5, max_tokens)
+        return await self.generate(
+            "Be concise and helpful.", prompt, 0.5, max_tokens
+        )
 
 
 llm_client = LLMClient()

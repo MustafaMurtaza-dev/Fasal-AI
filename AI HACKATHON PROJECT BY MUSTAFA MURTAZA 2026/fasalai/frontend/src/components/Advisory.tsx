@@ -31,105 +31,37 @@ const quickQ = [
 ];
 
 /* ═══════════════════════════════════════
-   SAFE EXTRACTORS — handles ALL backend formats
+   SAFE EXTRACTORS
    ═══════════════════════════════════════ */
 
-/**
- * Extracts a display string from any value.
- * Handles: string, number, boolean, null, undefined,
- * and objects like SourceReference { source, relevance_score }
- */
-function extractDisplayString(item: any): string {
-  if (item === null || item === undefined) return "";
+function extractSourceName(item: any): string {
+  if (!item) return "";
   if (typeof item === "string") return item.trim();
-  if (typeof item === "number" || typeof item === "boolean") return String(item);
-
   if (typeof item === "object") {
-    // SourceReference: { source: "...", relevance_score: 0.8, excerpt: "..." }
-    if (typeof item.source === "string" && item.source.trim()) {
-      return item.source.trim();
-    }
-    // Other common object shapes
+    if (typeof item.source === "string" && item.source.trim()) return item.source.trim();
     if (typeof item.name === "string" && item.name.trim()) return item.name.trim();
     if (typeof item.title === "string" && item.title.trim()) return item.title.trim();
-    if (typeof item.label === "string" && item.label.trim()) return item.label.trim();
-    if (typeof item.text === "string" && item.text.trim()) return item.text.trim();
-    if (typeof item.value === "string" && item.value.trim()) return item.value.trim();
-
-    // Last resort — stringify but skip empty objects
-    try {
-      const json = JSON.stringify(item);
-      if (json === "{}" || json === "[]") return "";
-      return json;
-    } catch {
-      return "";
-    }
-  }
-
-  return String(item).trim();
-}
-
-/**
- * Converts any array-like value to string[].
- * Filters out empty strings.
- */
-function toStringArray(value: any): string[] {
-  if (!value) return [];
-  if (typeof value === "string") return value.trim() ? [value.trim()] : [];
-  if (!Array.isArray(value)) return [];
-
-  const result: string[] = [];
-  for (const item of value) {
-    const str = extractDisplayString(item);
-    if (str.length > 0 && str !== "{}" && str !== "[]" && str !== "null") {
-      result.push(str);
-    }
-  }
-  return result;
-}
-
-/**
- * Safely extract answer text from API response.
- * Handles cases where answer might be an object or missing.
- */
-function extractAnswer(res: any, field: string): string {
-  if (!res) return "";
-  const val = res[field];
-  if (typeof val === "string") return val;
-  if (typeof val === "object" && val !== null) {
-    // Sometimes LLM returns { answer: { text: "..." } }
-    if (typeof val.text === "string") return val.text;
-    if (typeof val.content === "string") return val.content;
-    try {
-      return JSON.stringify(val);
-    } catch {
-      return "";
-    }
   }
   return "";
 }
 
-/**
- * Safely extract confidence as a number between 0-1
- */
-function extractConfidence(res: any): number | undefined {
-  if (!res) return undefined;
-  const val = res.confidence;
-  if (typeof val === "number" && !isNaN(val)) {
-    return Math.min(Math.max(val, 0), 1);
+function extractFollowUp(item: any): string {
+  if (!item) return "";
+  if (typeof item === "string") return item.trim();
+  if (typeof item === "object") {
+    if (typeof item.question === "string") return item.question.trim();
+    if (typeof item.text === "string") return item.text.trim();
+    if (typeof item.q === "string") return item.q.trim();
   }
-  if (typeof val === "string") {
-    const parsed = parseFloat(val);
-    if (!isNaN(parsed)) return Math.min(Math.max(parsed, 0), 1);
-  }
-  return undefined;
+  return "";
 }
 
 /* ═══════════════════════════════════════
-   MARKDOWN RENDERER
+   MARKDOWN RENDERER — handles all LLM formats
    ═══════════════════════════════════════ */
 
 const HEADING_KEYWORDS = [
+  // English
   "diagnosis", "treatment plan", "treatment", "recommended varieties",
   "cost estimate", "important notes", "prevention", "prevention tips",
   "suitable crops", "soil test", "fertilizer", "fertilizer recommendations",
@@ -146,12 +78,21 @@ const HEADING_KEYWORDS = [
   "additional tips", "storage", "seed treatment", "soil preparation",
   "land preparation", "water management", "nutrient management",
   "weed management", "post-harvest", "marketing tips",
+  "key takeaway", "best selling time", "storage tips",
+  "current mandi rates", "mandi rates", "post-harvest treatment",
+  "general guidance", "spray schedule", "application method",
+  "seed rate", "spacing", "yield potential", "profit estimate",
+  // Urdu
   "تشخیص", "علاج کا منصوبہ", "علاج", "سفارش کردہ اقسام",
   "لاگت کا اندازہ", "اہم نکات", "احتیاط", "روک تھام",
   "مناسب فصلیں", "کھاد", "آبپاشی", "بجائی", "کٹائی",
   "منڈی", "موسم", "حکومتی مدد", "اگلے اقدامات",
   "حفاظتی تدابیر", "مفید رابطے", "عمومی سفارشات",
   "نوٹ", "خوراک", "اقسام", "انتباہ", "خلاصہ",
+  "موجودہ منڈی کی قیمتیں", "بہترین فروخت کا وقت",
+  "محفوظ ذخیرہ کے نکات", "کھاد کی سفارش",
+  "پوسٹ ہارویسٹ", "حکومتی معاونت", "اہم نکتہ",
+  "سپرے شیڈول", "بیج کی مقدار", "پیداوار",
 ];
 
 function isHeadingLine(line: string): boolean {
@@ -161,40 +102,61 @@ function isHeadingLine(line: string): boolean {
   // Already bold: **Heading** or **Heading:**
   if (/^\*\*.+\*\*:?\s*$/.test(trimmed)) return true;
 
-  // Too long
-  if (trimmed.length > 80) return false;
+  // Too long for heading
+  if (trimmed.length > 100) return false;
 
-  // Ends with sentence punctuation — not a heading
-  if (/[.?!]$/.test(trimmed)) return false;
+  // Ends with sentence punctuation — likely a sentence
+  if (/[.?!؟۔]$/.test(trimmed) && trimmed.length > 40) return false;
 
-  const lower = trimmed.toLowerCase().replace(/:$/, "").trim();
+  // Remove parenthetical content for matching: "Current Mandi Rates (Onion)" → "current mandi rates"
+  const cleaned = trimmed
+    .replace(/\(.*?\)/g, "")    // Remove (Onion), (per acre), etc.
+    .replace(/\[.*?\]/g, "")    // Remove [optional] brackets
+    .replace(/:$/, "")          // Remove trailing colon
+    .trim()
+    .toLowerCase();
 
-  // Exact match
-  if (HEADING_KEYWORDS.includes(lower)) return true;
+  // Exact match with keywords
+  if (HEADING_KEYWORDS.includes(cleaned)) return true;
 
-  // Partial match for short lines
+  // Partial match — keyword appears in the line
   for (const kw of HEADING_KEYWORDS) {
-    if (lower.includes(kw) && trimmed.length < 50) return true;
+    if (cleaned.includes(kw) && trimmed.length < 60) return true;
   }
 
-  // Title Case detection for 1-6 word lines
-  const words = trimmed.split(/\s+/);
-  if (words.length >= 1 && words.length <= 6) {
+  // Pattern: "Word Word (stuff)" — likely a heading with context
+  if (/^[A-Z][\w\s]+\(.*\)\s*$/.test(trimmed) && trimmed.length < 60) {
+    return true;
+  }
+
+  // Title Case detection for 1-7 word lines (increased from 6)
+  const words = trimmed.replace(/\(.*?\)/g, "").trim().split(/\s+/);
+  if (words.length >= 1 && words.length <= 7) {
     const sentenceStarters = [
       "the", "a", "an", "if", "when", "do", "it", "this",
       "that", "i", "you", "we", "for", "is", "are", "was",
       "has", "have", "can", "will", "should", "please",
+      "apply", "use", "mix", "spray", "add", "check",
+      "visit", "clean", "keep", "rotate", "harvest",
     ];
     if (sentenceStarters.includes(words[0].toLowerCase())) return false;
 
     const upperCount = words.filter((w) => /^[A-Z\u0600-\u06FF]/.test(w)).length;
-    if (upperCount >= Math.ceil(words.length * 0.6) && !trimmed.includes(",")) {
+    if (upperCount >= Math.ceil(words.length * 0.5) && !trimmed.includes(",")) {
       return true;
     }
   }
 
   // Standalone Urdu text (short, no period)
-  if (/^[\u0600-\u06FF\s:]+$/.test(trimmed) && trimmed.length < 40) {
+  if (/^[\u0600-\u06FF\s:()\-–]+$/.test(trimmed) && trimmed.length < 50) {
+    // But not if it starts with a dash (bullet point)
+    if (!trimmed.startsWith("-") && !trimmed.startsWith("•")) {
+      return true;
+    }
+  }
+
+  // Ends with colon — "Fertilizer Recommendations:" → heading
+  if (/:$/.test(trimmed) && trimmed.length < 50 && !trimmed.includes(",")) {
     return true;
   }
 
@@ -211,6 +173,7 @@ function extractHeadingText(line: string): string {
 }
 
 function renderInline(text: string): React.ReactNode[] {
+  // Split on **bold** patterns
   const parts = text.split(/(\*\*.*?\*\*)/g);
   return parts.map((part, i) => {
     if (part.startsWith("**") && part.endsWith("**")) {
@@ -253,6 +216,7 @@ function renderMarkdown(raw: string): React.ReactNode {
     const line = lines[idx];
     const trimmed = line.trim();
 
+    // ── Empty line → flush paragraph ──
     if (trimmed === "") {
       flushParagraph();
       continue;
@@ -273,23 +237,8 @@ function renderMarkdown(raw: string): React.ReactNode {
       continue;
     }
 
-    // ── Section Heading (keyword based) ──
-    if (isHeadingLine(trimmed)) {
-      flushParagraph();
-      const headingText = extractHeadingText(trimmed);
-      elements.push(
-        <div key={key++} className="flex items-center gap-2.5 mt-4 mb-2">
-          <div className="w-1.5 h-6 rounded-full bg-gradient-to-b from-green-500 to-emerald-600 shadow-sm" />
-          <h4 className="text-[14px] font-extrabold text-gray-900 tracking-tight">
-            {headingText}
-          </h4>
-        </div>
-      );
-      continue;
-    }
-
-    // ── Numbered list ──
-    const numMatch = trimmed.match(/^(\d+)[.)]\s*(.*)/);
+    // ── Numbered list: "1. content" or "1) content" ──
+    const numMatch = trimmed.match(/^(\d+)[.)]\s+(.*)/);
     if (numMatch) {
       flushParagraph();
       elements.push(
@@ -308,16 +257,32 @@ function renderMarkdown(raw: string): React.ReactNode {
       continue;
     }
 
-    // ── Bullet list ──
-    if (/^[-•✓–]\s/.test(trimmed)) {
+    // ── Bullet list: "- item", "• item", "✓ item", "– item" ──
+    const bulletMatch = trimmed.match(/^[-•✓–]\s+(.*)/);
+    if (bulletMatch) {
       flushParagraph();
-      const content = trimmed.replace(/^[-•✓–]\s*/, "");
       elements.push(
         <div key={key++} className="flex gap-2.5 items-start pl-1">
           <span className="w-1.5 h-1.5 rounded-full bg-green-500 mt-[9px] shrink-0" />
           <span className="text-[13px] leading-relaxed text-gray-700">
-            {renderInline(content)}
+            {renderInline(bulletMatch[1])}
           </span>
+        </div>
+      );
+      continue;
+    }
+
+    // ── Section Heading (keyword/pattern based) ──
+    // Check AFTER bullets and numbers so "- Item" doesn't become heading
+    if (isHeadingLine(trimmed)) {
+      flushParagraph();
+      const headingText = extractHeadingText(trimmed);
+      elements.push(
+        <div key={key++} className="flex items-center gap-2.5 mt-4 mb-2">
+          <div className="w-1.5 h-6 rounded-full bg-gradient-to-b from-green-500 to-emerald-600 shadow-sm" />
+          <h4 className="text-[14px] font-extrabold text-gray-900 tracking-tight">
+            {headingText}
+          </h4>
         </div>
       );
       continue;
@@ -325,7 +290,7 @@ function renderMarkdown(raw: string): React.ReactNode {
 
     // ── Indented sub-items ──
     if (line.startsWith("  ") || line.startsWith("\t")) {
-      const indentedNum = trimmed.match(/^(\d+)[.)]\s*(.*)/);
+      const indentedNum = trimmed.match(/^(\d+)[.)]\s+(.*)/);
       if (indentedNum) {
         flushParagraph();
         elements.push(
@@ -344,14 +309,14 @@ function renderMarkdown(raw: string): React.ReactNode {
         continue;
       }
 
-      if (/^[-•]\s/.test(trimmed)) {
+      const indentedBullet = trimmed.match(/^[-•]\s+(.*)/);
+      if (indentedBullet) {
         flushParagraph();
-        const content = trimmed.replace(/^[-•]\s*/, "");
         elements.push(
           <div key={key++} className="flex gap-2 items-start ml-6 pl-1">
             <span className="w-1 h-1 rounded-full bg-gray-400 mt-[10px] shrink-0" />
             <span className="text-[12px] leading-relaxed text-gray-600">
-              {renderInline(content)}
+              {renderInline(indentedBullet[1])}
             </span>
           </div>
         );
@@ -359,7 +324,23 @@ function renderMarkdown(raw: string): React.ReactNode {
       }
     }
 
-    // ── Regular text ──
+    // ── Key Takeaway / Important Note — special highlight ──
+    if (/^(key takeaway|important|note|اہم|نوٹ)/i.test(trimmed)) {
+      flushParagraph();
+      elements.push(
+        <div
+          key={key++}
+          className="bg-amber-50 border border-amber-200 rounded-xl p-3 mt-2"
+        >
+          <p className="text-[13px] leading-relaxed text-amber-800 font-medium">
+            💡 {renderInline(trimmed)}
+          </p>
+        </div>
+      );
+      continue;
+    }
+
+    // ── Regular text → collect into paragraph ──
     paragraph.push(trimmed);
   }
 
@@ -513,7 +494,7 @@ export default function Advisory() {
     setInput(q);
   };
 
-  /* ─── SEND with full debug logging ─── */
+  /* ─── SEND ─── */
   const send = async (overrideInput?: string) => {
     const q = overrideInput || input;
     if (!q.trim() || loading) return;
@@ -523,41 +504,83 @@ export default function Advisory() {
 
     try {
       const res = await advisoryAPI.ask(q, crop || undefined);
+      console.log("📦 API response:", res);
 
-      // 🔍 DEBUG: Log what we received
-      console.log("📦 Full API response:", res);
-      console.log("📝 answer type:", typeof res.answer, "value:", res.answer);
-      console.log("📝 answer_urdu type:", typeof res.answer_urdu, "value:", res.answer_urdu);
-      console.log("📝 sources type:", typeof res.sources, "value:", res.sources);
-      console.log("📝 follow_up type:", typeof res.follow_up_questions, "value:", res.follow_up_questions);
-      console.log("📝 agents type:", typeof res.agents_used, "value:", res.agents_used);
-      console.log("📝 confidence type:", typeof res.confidence, "value:", res.confidence);
+      // ── Extract answer ──
+      let answerText = "";
+      if (typeof res.answer === "string") {
+        answerText = res.answer;
+      } else if (typeof res.answer === "object" && res.answer) {
+        answerText = res.answer.text || res.answer.content || JSON.stringify(res.answer);
+      }
 
-      // Build message with safe extraction
-      const answerText = extractAnswer(res, "answer");
-      const answerUrdu = extractAnswer(res, "answer_urdu");
+      // ── Extract Urdu ──
+      let answerUrdu = "";
+      if (typeof res.answer_urdu === "string" && res.answer_urdu.trim()) {
+        answerUrdu = res.answer_urdu;
+      }
+
+      // ── Extract sources ──
+      const sources: string[] = [];
+      if (Array.isArray(res.sources)) {
+        for (const s of res.sources) {
+          const name = extractSourceName(s);
+          if (name) sources.push(name);
+        }
+      }
+
+      // ── Extract follow-up ──
+      const followUp: string[] = [];
+      if (Array.isArray(res.follow_up_questions)) {
+        for (const fq of res.follow_up_questions) {
+          const text = extractFollowUp(fq);
+          if (text) followUp.push(text);
+        }
+      }
+
+      // ── Extract agents ──
+      const agents: string[] = [];
+      if (Array.isArray(res.agents_used)) {
+        for (const a of res.agents_used) {
+          const text = typeof a === "string" ? a.trim() : String(a).trim();
+          if (text) agents.push(text);
+        }
+      }
+
+      // ── Extract confidence ──
+      let confidence: number | undefined;
+      const rawConf = res.confidence;
+      if (typeof rawConf === "number" && !isNaN(rawConf)) {
+        confidence = Math.min(Math.max(rawConf, 0), 1);
+      } else if (typeof rawConf === "string") {
+        const p = parseFloat(rawConf);
+        if (!isNaN(p)) confidence = Math.min(Math.max(p, 0), 1);
+      }
 
       const botMsg: Msg = {
         role: "bot",
         text: answerText || "No response received. Please try again.",
         textUr: answerUrdu || undefined,
-        agents: toStringArray(res.agents_used),
-        confidence: extractConfidence(res),
-        sources: toStringArray(res.sources),
-        followUp: toStringArray(res.follow_up_questions),
+        agents: agents.length > 0 ? agents : undefined,
+        confidence,
+        sources: sources.length > 0 ? sources : undefined,
+        followUp: followUp.length > 0 ? followUp : undefined,
       };
 
-      // 🔍 DEBUG: Log what we built
-      console.log("🤖 Built bot message:", botMsg);
-
+      console.log("🤖 Bot message:", botMsg);
       setMsgs((p) => [...p, botMsg]);
     } catch (err: any) {
-      console.error("❌ Send error:", err);
+      console.error("❌ Error:", err);
+      const detail =
+        err?.response?.data?.detail ||
+        err?.response?.data?.answer ||
+        err?.message ||
+        "Something went wrong.";
       setMsgs((p) => [
         ...p,
         {
           role: "bot",
-          text: `**Error:** ${err.message || "Something went wrong."}\n\nPlease try again.`,
+          text: `**Error:** ${detail}\n\nPlease try again.`,
           textUr: "معذرت، غلطی ہوئی۔ دوبارہ کوشش کریں۔",
         },
       ]);
@@ -576,10 +599,7 @@ export default function Advisory() {
         <h2 className="text-3xl font-extrabold text-gray-800 mb-1">
           Ask Your <span className="text-gradient">Farming Question</span>
         </h2>
-        <p
-          className="text-sm text-gray-500 font-medium"
-          style={{ direction: "rtl" }}
-        >
+        <p className="text-sm text-gray-500 font-medium" style={{ direction: "rtl" }}>
           AI زرعی مشیر — اردو اور انگریزی میں
         </p>
       </div>
@@ -609,7 +629,7 @@ export default function Advisory() {
           </div>
         </div>
 
-        {/* Messages Area */}
+        {/* Messages */}
         <div className="h-[500px] overflow-y-auto p-5 space-y-5 bg-gradient-to-b from-green-50/30 to-transparent">
           {msgs.map((m, i) =>
             m.role === "user" ? (
@@ -630,7 +650,6 @@ export default function Advisory() {
               </div>
             )
           )}
-
           {loading && (
             <div className="flex gap-3 fade-in">
               <div className="w-9 h-9 rounded-2xl bg-gradient-to-br from-green-500 to-emerald-600 flex items-center justify-center shrink-0 shadow-md">
@@ -653,11 +672,7 @@ export default function Advisory() {
           {quickQ.map((q, i) => (
             <button
               key={i}
-              onClick={() => {
-                setInput(q);
-                // Auto-send quick questions
-                setTimeout(() => send(q), 100);
-              }}
+              onClick={() => send(q)}
               className="quick-pill shrink-0 text-xs bg-green-50 text-green-700 px-3.5 py-2 rounded-xl font-medium hover:bg-green-100 border border-green-100/80"
               style={{ direction: "rtl" }}
             >
@@ -666,7 +681,7 @@ export default function Advisory() {
           ))}
         </div>
 
-        {/* Input Area */}
+        {/* Input */}
         <div className="p-4 border-t border-gray-100/80 bg-white/60">
           <div className="flex gap-3">
             <input
