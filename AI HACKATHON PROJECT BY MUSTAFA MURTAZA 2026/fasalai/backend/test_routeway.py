@@ -1,9 +1,10 @@
 """Test which Routeway models actually work"""
+import os
 import httpx
 import asyncio
 import json
 
-API_KEY = "sk-cKEwNMHlM-ZVt7JzmASCTg5WiYDcSuKWsK3FnsKQdx4eZCC1T2yJRg"
+API_KEY = os.environ.get("ROUTEWAY_API_KEY", "YOUR_API_KEY_HERE")
 API_URL = "https://api.routeway.ai/v1/chat/completions"
 
 MODELS = [

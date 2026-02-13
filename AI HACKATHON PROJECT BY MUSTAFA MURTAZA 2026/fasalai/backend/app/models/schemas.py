@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, List, Dict, Any
 from enum import Enum
 from datetime import datetime
@@ -66,15 +66,13 @@ class SourceReference(BaseModel):
     relevance_score: float = Field(default=0.8, ge=0.0, le=1.0)
     excerpt: Optional[str] = None
 
-    class Config:
-        # Frontend ko clean JSON mile
-        json_schema_extra = {
-            "example": {
-                "source": "Punjab Agriculture Extension",
-                "relevance_score": 0.85,
-                "excerpt": "Wheat rust can be controlled by..."
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "source": "Punjab Agriculture Extension",
+            "relevance_score": 0.85,
+            "excerpt": "Wheat rust can be controlled by..."
         }
+    })
 
 class AdvisoryResponse(BaseModel):
     answer: str = ""
@@ -85,20 +83,19 @@ class AdvisoryResponse(BaseModel):
     agents_used: List[str] = []
     reasoning_chain: str = ""
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "answer": "For wheat rust, apply Tilt fungicide...",
-                "answer_urdu": "گندم کی زنگ کے لیے ٹلٹ سپرے کریں...",
-                "sources": [
-                    {"source": "Punjab Agri Dept", "relevance_score": 0.9, "excerpt": None}
-                ],
-                "confidence": 0.88,
-                "follow_up_questions": ["کتنی مقدار میں سپرے کریں؟"],
-                "agents_used": ["RAG", "LLM"],
-                "reasoning_chain": "Disease query → RAG lookup → LLM generation"
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "answer": "For wheat rust, apply Tilt fungicide...",
+            "answer_urdu": "گندم کی زنگ کے لیے ٹلٹ سپرے کریں...",
+            "sources": [
+                {"source": "Punjab Agri Dept", "relevance_score": 0.9, "excerpt": None}
+            ],
+            "confidence": 0.88,
+            "follow_up_questions": ["کتنی مقدار میں سپرے کریں؟"],
+            "agents_used": ["RAG", "LLM"],
+            "reasoning_chain": "Disease query → RAG lookup → LLM generation"
         }
+    })
 
 
 # ─── Market ───

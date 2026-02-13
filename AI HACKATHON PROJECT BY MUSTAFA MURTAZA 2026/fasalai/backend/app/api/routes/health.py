@@ -13,7 +13,6 @@ async def health():
             "primary": settings.PRIMARY_MODEL,
             "fast": settings.FAST_MODEL,
             "backup": settings.BACKUP_MODEL,
-            "extra": settings.EXTRA_MODEL,
         },
         "cost": "FREE ₨0",
     }

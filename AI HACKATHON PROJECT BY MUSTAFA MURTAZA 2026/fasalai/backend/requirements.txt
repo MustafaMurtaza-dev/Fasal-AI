@@ -17,9 +17,7 @@ Pillow>=11.0.0
 # LLM via OpenRouter
 openai>=1.82.0
 
-# RAG
-chromadb>=1.0.0
-sentence-transformers>=4.1.0
+# RAG — uses in-memory TF-IDF (no external ML deps needed)
 
 # Speech
 gtts>=2.5.0

@@ -166,7 +166,10 @@ class AgentOrchestratorService:
         cache_key = f"{query}|{crop_type}|{location}"
         if cache_key in self._query_cache:
             logger.info("⚡ Cache hit!")
-            return self._query_cache[cache_key]
+            # LRU: Move to end
+            response = self._query_cache.pop(cache_key)
+            self._query_cache[cache_key] = response
+            return response
 
         # ── 2. Classify ──
         categories = await self.classify_query(query)
@@ -232,7 +235,7 @@ class AgentOrchestratorService:
                 SYSTEM_PROMPT, prompt, tier=ModelTier.PRIMARY
             )
             agents_used.append("LLM")
-            logger.info(f"📋 LLM response keys: {list(llm_resp.keys())}")
+            # logger.info(f"📋 LLM response keys: {list(llm_resp.keys())}")
         except Exception as e:
             logger.warning(f"❌ LLM failed: {e}")
             return self._build_fallback(
@@ -245,10 +248,15 @@ class AgentOrchestratorService:
         # ── 6. Build Response ──
         response = self._build_response(validated, agents_used, categories)
 
-        # ── 7. Cache ──
-        if len(self._query_cache) >= self._max_cache:
+        # ── 7. Cache (LRU) ──
+        if cache_key in self._query_cache:
+            # Should not happen typically unless race condition, but safe to delete
+            del self._query_cache[cache_key]
+        elif len(self._query_cache) >= self._max_cache:
+            # Remove oldest (first item)
             oldest = next(iter(self._query_cache))
             del self._query_cache[oldest]
+        
         self._query_cache[cache_key] = response
 
         logger.info(

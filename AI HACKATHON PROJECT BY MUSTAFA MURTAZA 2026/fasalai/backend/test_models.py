@@ -2,10 +2,11 @@
 FasalAI — Test FREE Models (with retry for rate limits)
 Run: python test_models.py
 """
+import os
 import asyncio
 from openai import AsyncOpenAI
 
-API_KEY = "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"
+API_KEY = os.environ.get("OPENROUTER_API_KEY", "YOUR_API_KEY_HERE")
 BASE_URL = "https://openrouter.ai/api/v1"
 
 MODELS = {

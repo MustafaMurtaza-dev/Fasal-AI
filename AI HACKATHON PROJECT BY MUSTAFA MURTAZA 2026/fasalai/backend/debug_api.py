@@ -1,9 +1,10 @@
 """Debug — see actual response structure"""
+import os
 import httpx
 import asyncio
 import json
 
-API_KEY = "sk-cKEwNMHlM-ZVt7JzmASCTg5WiYDcSuKWsK3FnsKQdx4eZCC1T2yJRg"
+API_KEY = os.environ.get("ROUTEWAY_API_KEY", "YOUR_API_KEY_HERE")
 URL = "https://api.routeway.ai/v1/chat/completions"
 
 async def test(model):
@@ -37,4 +38,4 @@ async def main():
         await test(m)
         await asyncio.sleep(2)
 
-asyncio.run(main)
+asyncio.run(main())
